@@ -1043,53 +1043,7 @@ def main():
                 lambda r: int(r["消化予算"] / r["LINE登録数"]) if r["LINE登録数"] > 0 else 0, axis=1
             )
 
-            # ── キャンペーン別パフォーマンス（日別） ──
-            st.subheader("キャンペーン別パフォーマンス")
-
-            daily_camp = df_filtered.groupby(["Day", "Campaign Name"]).agg(
-                消化金額=("金額", "sum"),
-            ).reset_index()
-
-            daily_regs_camp = regs_filtered.merge(cr_to_camp, on="CR詳細", how="inner")
-            daily_regs_camp = daily_regs_camp.groupby(["登録日", "Campaign Name"]).agg(
-                登録数=("登録数", "sum")
-            ).reset_index()
-
-            daily_camp = daily_camp.merge(
-                daily_regs_camp, left_on=["Day", "Campaign Name"],
-                right_on=["登録日", "Campaign Name"], how="left"
-            )
-            daily_camp["登録数"] = daily_camp["登録数"].fillna(0).astype(int)
-            daily_camp["CPA"] = daily_camp.apply(
-                lambda r: int(r["消化金額"] / r["登録数"]) if r["登録数"] > 0 else 0, axis=1
-            )
-            daily_camp = daily_camp.sort_values(["Day", "消化金額"], ascending=[False, False])
-
-            display_daily = daily_camp[["Day", "Campaign Name", "消化金額", "登録数", "CPA"]].copy()
-            display_daily = display_daily.rename(columns={
-                "Day": "日付", "Campaign Name": "キャンペーン名",
-                "登録数": "LINE登録数",
-            })
-            display_daily["消化金額"] = display_daily["消化金額"].apply(lambda x: f"¥{x:,.0f}")
-            display_daily["CPA"] = display_daily["CPA"].apply(lambda x: f"¥{x:,.0f}" if x > 0 else "-")
-            display_daily["LINE登録数"] = display_daily["LINE登録数"].apply(lambda x: str(x) if x > 0 else "-")
-
-            st.dataframe(
-                display_daily,
-                use_container_width=True,
-                hide_index=True,
-                height=500,
-                column_config={
-                    "日付": st.column_config.TextColumn("日付", width="small"),
-                    "キャンペーン名": st.column_config.TextColumn("キャンペーン名", width="large"),
-                    "消化金額": st.column_config.TextColumn("消化金額", width="medium"),
-                    "LINE登録数": st.column_config.TextColumn("LINE登録数", width="small"),
-                    "CPA": st.column_config.TextColumn("CPA", width="medium"),
-                },
-            )
-
             # ── キャンペーン別パフォーマンス（集計） ──
-            st.divider()
             st.subheader("キャンペーン別パフォーマンス（集計）")
             display_camp = df_camp_summary.sort_values("消化予算", ascending=False).copy()
             display_camp["消化予算"] = display_camp["消化予算"].apply(lambda x: f"¥{x:,.0f}")
@@ -1109,19 +1063,48 @@ def main():
             # ── 広告費 vs 売上（キャンペーン別） ──
             st.divider()
             st.subheader("広告費 vs 売上（キャンペーン別）")
+
+            # チャート専用の日付フィルタ
+            ch_col1, ch_col2, ch_col3 = st.columns([1, 0.8, 0.8])
+            with ch_col1:
+                ch_use_custom = st.checkbox("日付範囲を個別指定", key="ch_custom_toggle")
+            if ch_use_custom:
+                with ch_col2:
+                    ch_start = st.date_input("開始", value=pd.to_datetime(dates[0]),
+                                             min_value=pd.to_datetime(dates[0]),
+                                             max_value=pd.to_datetime(dates[-1]),
+                                             key="ch_start")
+                with ch_col3:
+                    ch_end = st.date_input("終了", value=pd.to_datetime(dates[-1]),
+                                           min_value=pd.to_datetime(dates[0]),
+                                           max_value=pd.to_datetime(dates[-1]),
+                                           key="ch_end")
+                ch_start_str = str(pd.Timestamp(ch_start).date())
+                ch_end_str = str(pd.Timestamp(ch_end).date())
+            else:
+                ch_start_str, ch_end_str = d_start_str, d_end_str
+
+            ch_budget = df_budget_raw[
+                (df_budget_raw["Day"] >= ch_start_str) & (df_budget_raw["Day"] <= ch_end_str)
+            ]
+
+            # チャート期間の予算集計（1円でも消化したキャンペーンのみ）
+            ch_camp_budget = ch_budget.groupby("Campaign Name")["金額"].sum().reset_index()
+            ch_camp_budget.columns = ["キャンペーン名", "消化予算"]
+            ch_camp_budget = ch_camp_budget[ch_camp_budget["消化予算"] > 0]
+
             # CR詳細→キャンペーン名マッピングで正確に売上を紐づけ
             matched_meta_ad = df_meta[df_meta["CR詳細"].notna()].copy()
-            detail_to_camp = df_filtered[["Campaign Name", "CR詳細"]].drop_duplicates()
+            detail_to_camp = ch_budget[["Campaign Name", "CR詳細"]].drop_duplicates()
             matched_meta_ad = matched_meta_ad.merge(detail_to_camp, on="CR詳細", how="left")
             camp_sales = matched_meta_ad[matched_meta_ad["Campaign Name"].notna()].groupby(
                 "Campaign Name")["受注金額"].sum().reset_index()
             camp_sales.columns = ["キャンペーン名", "売上合計"]
 
-            chart_data = df_camp_summary[["キャンペーン名", "消化予算"]].merge(
+            chart_data = ch_camp_budget.merge(
                 camp_sales, on="キャンペーン名", how="left"
             ).fillna(0)
             chart_data["売上合計"] = chart_data["売上合計"].astype(int)
-            chart_data = chart_data[chart_data["消化予算"] > 0].copy()
 
             if len(chart_data) > 0:
                 chart_data["短縮名"] = chart_data["キャンペーン名"].apply(short_camp_name)
