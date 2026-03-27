@@ -85,8 +85,8 @@ def extract_cr(name):
 
 
 def extract_cr_detail(name):
-    """CR番号＋バリアント名を抽出（例: CR27-2作り直し, CR27-2背景変更）"""
-    m = re.search(r"CR(\d+(?:-\d+)?)([\u3000-\u9FFF\uF900-\uFAFF]*)", name, re.IGNORECASE)
+    """CR番号＋バリアント名を抽出（例: CR27-2作り直し, CR18re, CR27-2背景変更）"""
+    m = re.search(r"CR(\d+(?:-\d+)?[a-zA-Z]*)([\u3000-\u9FFF\uF900-\uFAFF]*)", name, re.IGNORECASE)
     if not m:
         return None
     return f"CR{m.group(1)}{m.group(2)}" if m.group(2) else f"CR{m.group(1)}"
