@@ -876,9 +876,31 @@ def main():
             camp_budget.columns = ["キャンペーン名", "消化予算"]
 
             cr_to_camp = df_filtered[["Campaign Name", "CR詳細"]].drop_duplicates()
-            camp_regs = regs_filtered.merge(cr_to_camp, on="CR詳細", how="inner")
-            camp_regs = camp_regs.groupby("Campaign Name")["登録数"].sum().reset_index()
-            camp_regs.columns = ["キャンペーン名", "LINE登録数"]
+            camp_regs_raw = regs_filtered.merge(cr_to_camp, on="CR詳細", how="inner")
+            camp_regs_raw = camp_regs_raw.groupby("Campaign Name")["登録数"].sum().reset_index()
+            camp_regs_raw.columns = ["キャンペーン名", "LINE登録数"]
+
+            # CR詳細を共有するキャンペーンがある場合、予算比率で按分
+            cr_camp_count = cr_to_camp.groupby("CR詳細")["Campaign Name"].count()
+            shared_crs = set(cr_camp_count[cr_camp_count > 1].index)
+            if shared_crs:
+                camp_regs_list = []
+                for _, row in camp_regs_raw.iterrows():
+                    cname = row["キャンペーン名"]
+                    cr_detail = cr_to_camp[cr_to_camp["Campaign Name"] == cname]["CR詳細"].iloc[0] if len(cr_to_camp[cr_to_camp["Campaign Name"] == cname]) > 0 else None
+                    if cr_detail in shared_crs:
+                        # このCR詳細を共有する全キャンペーンの予算を取得
+                        sibling_camps = cr_to_camp[cr_to_camp["CR詳細"] == cr_detail]["Campaign Name"].tolist()
+                        sibling_budgets = camp_budget[camp_budget["キャンペーン名"].isin(sibling_camps)]
+                        total_budget = sibling_budgets["消化予算"].sum()
+                        my_budget = camp_budget[camp_budget["キャンペーン名"] == cname]["消化予算"].sum()
+                        ratio = my_budget / total_budget if total_budget > 0 else 1 / len(sibling_camps)
+                        camp_regs_list.append({"キャンペーン名": cname, "LINE登録数": int(round(row["LINE登録数"] * ratio))})
+                    else:
+                        camp_regs_list.append({"キャンペーン名": cname, "LINE登録数": int(row["LINE登録数"])})
+                camp_regs = pd.DataFrame(camp_regs_list)
+            else:
+                camp_regs = camp_regs_raw
 
             df_camp_summary = camp_budget.merge(camp_regs, on="キャンペーン名", how="outer").fillna(0)
             df_camp_summary["消化予算"] = df_camp_summary["消化予算"].astype(int)
