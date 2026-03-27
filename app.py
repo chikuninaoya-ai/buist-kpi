@@ -862,16 +862,43 @@ def main():
             # ── キャンペーン×日付 ピボットテーブル ──
             st.subheader("キャンペーン別 日付×指標")
 
+            # ピボット専用の日付フィルタ
+            pv_col1, pv_col2, pv_col3 = st.columns([1, 0.8, 0.8])
+            with pv_col1:
+                pv_use_custom = st.checkbox("日付範囲を個別指定", key="pv_custom_toggle")
+            if pv_use_custom:
+                with pv_col2:
+                    pv_start = st.date_input("開始", value=pd.to_datetime(dates[0]),
+                                             min_value=pd.to_datetime(dates[0]),
+                                             max_value=pd.to_datetime(dates[-1]),
+                                             key="pv_start")
+                with pv_col3:
+                    pv_end = st.date_input("終了", value=pd.to_datetime(dates[-1]),
+                                           min_value=pd.to_datetime(dates[0]),
+                                           max_value=pd.to_datetime(dates[-1]),
+                                           key="pv_end")
+                pv_start_str = str(pd.Timestamp(pv_start).date())
+                pv_end_str = str(pd.Timestamp(pv_end).date())
+            else:
+                pv_start_str, pv_end_str = d_start_str, d_end_str
+
+            pv_budget = df_budget_raw[
+                (df_budget_raw["Day"] >= pv_start_str) & (df_budget_raw["Day"] <= pv_end_str)
+            ]
+            pv_regs = regs_by_day_cr[
+                (regs_by_day_cr["登録日"] >= pv_start_str) & (regs_by_day_cr["登録日"] <= pv_end_str)
+            ]
+
             # 期間内の日付リスト
-            filtered_dates = sorted(df_filtered["Day"].unique())
+            filtered_dates = sorted(pv_budget["Day"].unique())
 
             # 広告費: CR詳細 × Day
-            budget_pivot = df_filtered.groupby(["CR詳細", "Day"])["金額"].sum()
-            budget_by_detail = df_filtered.groupby("CR詳細")["金額"].sum()
+            budget_pivot = pv_budget.groupby(["CR詳細", "Day"])["金額"].sum()
+            budget_by_detail = pv_budget.groupby("CR詳細")["金額"].sum()
 
             # 獲得リスト数: CR詳細 × 登録日
-            regs_pivot = regs_filtered.groupby(["CR詳細", "登録日"])["登録数"].sum()
-            regs_by_detail = regs_filtered.groupby("CR詳細")["登録数"].sum()
+            regs_pivot = pv_regs.groupby(["CR詳細", "登録日"])["登録数"].sum()
+            regs_by_detail = pv_regs.groupby("CR詳細")["登録数"].sum()
 
             # アポ獲得数: CR詳細 × 日付（審査落ち・日程調整中を除外）
             apo_by_detail_day = pd.Series(dtype=int)
@@ -879,8 +906,8 @@ def main():
             if len(df_consult_ad) > 0 and "CR詳細" in df_consult_ad.columns and "日付" in df_consult_ad.columns:
                 df_ca = df_consult_ad[
                     (df_consult_ad["CR詳細"].notna()) &
-                    (df_consult_ad["日付"] >= d_start_str) &
-                    (df_consult_ad["日付"] <= d_end_str) &
+                    (df_consult_ad["日付"] >= pv_start_str) &
+                    (df_consult_ad["日付"] <= pv_end_str) &
                     (~df_consult_ad["ステータス"].str.contains("審査落ち|日程調整", na=False))
                 ]
                 if len(df_ca) > 0:
@@ -905,60 +932,95 @@ def main():
 
             if all_cr_details:
                 metrics = ["広告費", "獲得リスト数", "CPA", "アポ獲得数", "売上", "ROAS"]
-                pivot_rows = []
+                num_metrics = len(metrics)
+                # キャンペーン交互色
+                camp_colors = ["#ffffff", "#f7f9fc"]
 
-                for cr in all_cr_details:
-                    for metric in metrics:
-                        row_data = {"キャンペーン": cr, "指標": metric}
+                # HTMLテーブル構築
+                html_parts = []
+                html_parts.append('<div class="pivot-wrap"><table class="pivot-tbl">')
+                # ヘッダー
+                html_parts.append('<thead><tr>')
+                html_parts.append('<th class="sticky-col sc0">キャンペーン</th>')
+                html_parts.append('<th class="sticky-col sc1">指標</th>')
+                html_parts.append('<th class="sticky-col sc2">合計</th>')
+                for d in filtered_dates:
+                    day_num = d[8:].lstrip("0") or "0"  # "2026-03-01" → "1"
+                    month_num = d[5:7].lstrip("0")
+                    html_parts.append(f'<th>{month_num}/{day_num}</th>')
+                html_parts.append('</tr></thead><tbody>')
+
+                for ci, cr in enumerate(all_cr_details):
+                    bg = camp_colors[ci % 2]
+                    b_total = int(budget_by_detail.get(cr, 0))
+                    r_total = int(regs_by_detail.get(cr, 0))
+                    a_total = int(apo_by_detail_total.get(cr, 0)) if len(apo_by_detail_total) > 0 else 0
+                    s_total = int(sales_by_detail.get(cr, 0)) if len(sales_by_detail) > 0 else 0
+
+                    for mi, metric in enumerate(metrics):
+                        html_parts.append(f'<tr style="background:{bg}">')
+                        # キャンペーン名セル（最初の指標行のみrowspan）
+                        if mi == 0:
+                            html_parts.append(f'<td class="sticky-col sc0 camp-cell" rowspan="{num_metrics}" style="background:{bg}">{cr}</td>')
+                        # 指標名
+                        html_parts.append(f'<td class="sticky-col sc1" style="background:{bg}">{metric}</td>')
 
                         # 合計値
-                        b_total = int(budget_by_detail.get(cr, 0))
-                        r_total = int(regs_by_detail.get(cr, 0))
-                        a_total = int(apo_by_detail_total.get(cr, 0)) if len(apo_by_detail_total) > 0 else 0
-                        s_total = int(sales_by_detail.get(cr, 0)) if len(sales_by_detail) > 0 else 0
-
                         if metric == "広告費":
-                            row_data["合計"] = f"¥{b_total:,}" if b_total else "-"
+                            total_val = f"¥{b_total:,}" if b_total else "-"
                         elif metric == "獲得リスト数":
-                            row_data["合計"] = str(r_total) if r_total else "-"
+                            total_val = str(r_total) if r_total else "-"
                         elif metric == "CPA":
-                            row_data["合計"] = f"¥{b_total // r_total:,}" if r_total > 0 else "-"
+                            total_val = f"¥{b_total // r_total:,}" if r_total > 0 else "-"
                         elif metric == "アポ獲得数":
-                            row_data["合計"] = str(a_total) if a_total else "-"
+                            total_val = str(a_total) if a_total else "-"
                         elif metric == "売上":
-                            row_data["合計"] = f"¥{s_total:,}" if s_total else "-"
+                            total_val = f"¥{s_total:,}" if s_total else "-"
                         elif metric == "ROAS":
-                            row_data["合計"] = f"{round(s_total / b_total * 100, 1)}%" if b_total > 0 else "-"
+                            total_val = f"{round(s_total / b_total * 100, 1)}%" if b_total > 0 else "-"
+                        html_parts.append(f'<td class="sticky-col sc2 total-cell" style="background:{bg}">{total_val}</td>')
 
                         # 日別値
                         for d in filtered_dates:
-                            d_short = d[5:]  # "03-01" → 列名用
                             b = int(budget_pivot.get((cr, d), 0))
                             r = int(regs_pivot.get((cr, d), 0))
                             a = int(apo_by_detail_day.get((cr, d), 0)) if len(apo_by_detail_day) > 0 else 0
 
                             if metric == "広告費":
-                                row_data[d_short] = f"¥{b:,}" if b else "-"
+                                v = f"¥{b:,}" if b else "-"
                             elif metric == "獲得リスト数":
-                                row_data[d_short] = str(r) if r else "-"
+                                v = str(r) if r else "-"
                             elif metric == "CPA":
-                                row_data[d_short] = f"¥{b // r:,}" if r > 0 else "-"
+                                v = f"¥{b // r:,}" if r > 0 else "-"
                             elif metric == "アポ獲得数":
-                                row_data[d_short] = str(a) if a else "-"
+                                v = str(a) if a else "-"
                             elif metric == "売上":
-                                row_data[d_short] = "-"  # 売上は日別紐づけ不可
+                                v = "-"
                             elif metric == "ROAS":
-                                row_data[d_short] = "-"  # 日別ROAS算出不可
+                                v = "-"
+                            html_parts.append(f'<td>{v}</td>')
+                        html_parts.append('</tr>')
 
-                        pivot_rows.append(row_data)
+                html_parts.append('</tbody></table></div>')
 
-                df_pivot = pd.DataFrame(pivot_rows)
-                st.dataframe(
-                    df_pivot,
-                    use_container_width=True,
-                    hide_index=True,
-                    height=min(len(df_pivot) * 35 + 38, 800),
-                )
+                # CSS
+                pivot_css = """
+<style>
+.pivot-wrap { overflow-x: auto; max-height: 800px; overflow-y: auto; border: 1px solid #ddd; border-radius: 8px; }
+.pivot-tbl { border-collapse: separate; border-spacing: 0; font-size: 12px; white-space: nowrap; }
+.pivot-tbl th, .pivot-tbl td { padding: 4px 10px; border-bottom: 1px solid #e8e8e8; border-right: 1px solid #f0f0f0; text-align: right; }
+.pivot-tbl th { background: #f5f5f5; position: sticky; top: 0; z-index: 3; font-weight: 600; }
+.pivot-tbl .camp-cell { font-weight: 700; text-align: left; vertical-align: middle; border-right: 2px solid #ddd; }
+.pivot-tbl .total-cell { font-weight: 600; border-right: 2px solid #ccc; }
+.sticky-col { position: sticky; z-index: 2; }
+.sc0 { left: 0; min-width: 110px; text-align: left; }
+.sc1 { left: 110px; min-width: 90px; text-align: left; border-right: 1px solid #ddd; }
+.sc2 { left: 200px; min-width: 90px; border-right: 2px solid #ccc; }
+.pivot-tbl thead .sticky-col { z-index: 4; }
+.pivot-tbl tr:hover td { background: #fffde7 !important; }
+</style>
+"""
+                st.markdown(pivot_css + "".join(html_parts), unsafe_allow_html=True)
             else:
                 st.info("データなし")
 
