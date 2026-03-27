@@ -299,13 +299,13 @@ def load_data():
                 })
     df_consult_ad = pd.DataFrame(consult_ad) if consult_ad else pd.DataFrame(columns=["ステータス", "経路", "日付", "CR詳細"])
 
-    # SNS
+    # SNS（A=申し込み日, D=LINE名, H=ステータス）
     ws_consult_sns = sh2.worksheet("個別相談ステータス(SNS)")
     sns_rows = ws_consult_sns.get_all_values()
     consult_sns = []
     for row in sns_rows[2:]:
         if row[0].strip().startswith("2026/03") or row[0].strip().startswith("2026/3"):
-            status = row[6].strip() if len(row) > 6 else ""
+            status = row[7].strip() if len(row) > 7 else ""
             if status:
                 consult_sns.append({"ステータス": status})
     df_consult_sns = pd.DataFrame(consult_sns) if consult_sns else pd.DataFrame(columns=["ステータス"])
