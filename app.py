@@ -875,10 +875,31 @@ def main():
             st.subheader("キャンペーン別 日付×指標")
 
             # ピボット専用の日付フィルタ
-            pv_col1, pv_col2, pv_col3 = st.columns([1, 0.8, 0.8])
+            pv_presets = ["ダッシュボードと同じ", "今月", "今日", "昨日", "過去7日間", "過去14日間", "過去30日間", "カスタム期間"]
+            pv_col1, pv_col2, pv_col3 = st.columns([1.2, 0.8, 0.8])
             with pv_col1:
-                pv_use_custom = st.checkbox("日付範囲を個別指定", key="pv_custom_toggle")
-            if pv_use_custom:
+                pv_preset = st.selectbox("期間", pv_presets, index=0, key="pv_period", label_visibility="collapsed")
+
+            if pv_preset == "ダッシュボードと同じ":
+                pv_start_str, pv_end_str = d_start_str, d_end_str
+            elif pv_preset == "今月":
+                pv_start_str = str(today.replace(day=1).date())
+                pv_end_str = str(today.date())
+            elif pv_preset == "今日":
+                pv_start_str = pv_end_str = str(today.date())
+            elif pv_preset == "昨日":
+                yesterday = today - timedelta(days=1)
+                pv_start_str = pv_end_str = str(yesterday.date())
+            elif pv_preset == "過去7日間":
+                pv_start_str = str((today - timedelta(days=6)).date())
+                pv_end_str = str(today.date())
+            elif pv_preset == "過去14日間":
+                pv_start_str = str((today - timedelta(days=13)).date())
+                pv_end_str = str(today.date())
+            elif pv_preset == "過去30日間":
+                pv_start_str = str((today - timedelta(days=29)).date())
+                pv_end_str = str(today.date())
+            else:
                 with pv_col2:
                     pv_start = st.date_input("開始", value=pd.to_datetime(dates[0]),
                                              min_value=pd.to_datetime(dates[0]),
@@ -891,8 +912,6 @@ def main():
                                            key="pv_end")
                 pv_start_str = str(pd.Timestamp(pv_start).date())
                 pv_end_str = str(pd.Timestamp(pv_end).date())
-            else:
-                pv_start_str, pv_end_str = d_start_str, d_end_str
 
             pv_budget = df_budget_raw[
                 (df_budget_raw["Day"] >= pv_start_str) & (df_budget_raw["Day"] <= pv_end_str)
