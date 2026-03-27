@@ -1097,6 +1097,7 @@ def main():
             # ── 広告費 vs 売上（キャンペーン別）── ピボットテーブルと同じ日付範囲
             st.divider()
             st.subheader("広告費 vs 売上（キャンペーン別）")
+            st.caption(f"期間: {pv_start_str} 〜 {pv_end_str}")
 
             # チャート期間の予算集計（1円でも消化したキャンペーンのみ）- ピボットと同じ日付範囲
             ch_camp_budget = pv_budget.groupby("Campaign Name")["金額"].sum().reset_index()
