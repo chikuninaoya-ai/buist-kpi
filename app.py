@@ -274,8 +274,18 @@ def load_data():
             status = row[7].strip() if len(row) > 7 else ""
             route = row[5].strip() if len(row) > 5 else ""
             if status:
-                consult_ad.append({"ステータス": status, "経路": route})
-    df_consult_ad = pd.DataFrame(consult_ad) if consult_ad else pd.DataFrame(columns=["ステータス", "経路"])
+                date_str = row[0].strip()[:10]  # 2026/03/xx
+                # 日付を統一フォーマットに変換（2026/3/5 → 2026-03-05）
+                try:
+                    date_normalized = str(pd.Timestamp(date_str).date())
+                except Exception:
+                    date_normalized = ""
+                consult_ad.append({
+                    "ステータス": status, "経路": route,
+                    "日付": date_normalized,
+                    "CR詳細": extract_cr_detail(route) if route else None,
+                })
+    df_consult_ad = pd.DataFrame(consult_ad) if consult_ad else pd.DataFrame(columns=["ステータス", "経路", "日付", "CR詳細"])
 
     # SNS
     ws_consult_sns = sh2.worksheet("個別相談ステータス(SNS)")
@@ -846,6 +856,111 @@ def main():
             row[1].metric("キャンペーン数", f"{num_campaigns}")
             row[2].metric("コンバージョン数（LINE登録）", f"{total_regs_period}")
             row[3].metric("CPA", format_yen(avg_cpa))
+
+            st.divider()
+
+            # ── キャンペーン×日付 ピボットテーブル ──
+            st.subheader("キャンペーン別 日付×指標")
+
+            # 期間内の日付リスト
+            filtered_dates = sorted(df_filtered["Day"].unique())
+
+            # 広告費: CR詳細 × Day
+            budget_pivot = df_filtered.groupby(["CR詳細", "Day"])["金額"].sum()
+            budget_by_detail = df_filtered.groupby("CR詳細")["金額"].sum()
+
+            # 獲得リスト数: CR詳細 × 登録日
+            regs_pivot = regs_filtered.groupby(["CR詳細", "登録日"])["登録数"].sum()
+            regs_by_detail = regs_filtered.groupby("CR詳細")["登録数"].sum()
+
+            # アポ獲得数: CR詳細 × 日付（審査落ち・日程調整中を除外）
+            apo_by_detail_day = pd.Series(dtype=int)
+            apo_by_detail_total = pd.Series(dtype=int)
+            if len(df_consult_ad) > 0 and "CR詳細" in df_consult_ad.columns and "日付" in df_consult_ad.columns:
+                df_ca = df_consult_ad[
+                    (df_consult_ad["CR詳細"].notna()) &
+                    (df_consult_ad["日付"] >= d_start_str) &
+                    (df_consult_ad["日付"] <= d_end_str) &
+                    (~df_consult_ad["ステータス"].str.contains("審査落ち|日程調整", na=False))
+                ]
+                if len(df_ca) > 0:
+                    apo_by_detail_day = df_ca.groupby(["CR詳細", "日付"]).size()
+                    apo_by_detail_total = df_ca.groupby("CR詳細").size()
+
+            # 売上: CR詳細（合計のみ、日付別は不可）
+            sales_by_detail = pd.Series(dtype=int)
+            if len(df_all_sales) > 0 and "CR詳細" in df_all_sales.columns:
+                matched = df_all_sales[df_all_sales["CR詳細"].notna()]
+                if len(matched) > 0:
+                    sales_by_detail = matched.groupby("CR詳細")["受注金額"].sum()
+
+            # 全CR詳細を収集
+            all_cr_details = sorted(
+                set(budget_by_detail.index)
+                | set(regs_by_detail.index)
+                | (set(apo_by_detail_total.index) if len(apo_by_detail_total) > 0 else set())
+                | (set(sales_by_detail.index) if len(sales_by_detail) > 0 else set()),
+                key=cr_sort_key,
+            )
+
+            if all_cr_details:
+                metrics = ["広告費", "獲得リスト数", "CPA", "アポ獲得数", "売上", "ROAS"]
+                pivot_rows = []
+
+                for cr in all_cr_details:
+                    for metric in metrics:
+                        row_data = {"キャンペーン": cr, "指標": metric}
+
+                        # 合計値
+                        b_total = int(budget_by_detail.get(cr, 0))
+                        r_total = int(regs_by_detail.get(cr, 0))
+                        a_total = int(apo_by_detail_total.get(cr, 0)) if len(apo_by_detail_total) > 0 else 0
+                        s_total = int(sales_by_detail.get(cr, 0)) if len(sales_by_detail) > 0 else 0
+
+                        if metric == "広告費":
+                            row_data["合計"] = f"¥{b_total:,}" if b_total else "-"
+                        elif metric == "獲得リスト数":
+                            row_data["合計"] = str(r_total) if r_total else "-"
+                        elif metric == "CPA":
+                            row_data["合計"] = f"¥{b_total // r_total:,}" if r_total > 0 else "-"
+                        elif metric == "アポ獲得数":
+                            row_data["合計"] = str(a_total) if a_total else "-"
+                        elif metric == "売上":
+                            row_data["合計"] = f"¥{s_total:,}" if s_total else "-"
+                        elif metric == "ROAS":
+                            row_data["合計"] = f"{round(s_total / b_total * 100, 1)}%" if b_total > 0 else "-"
+
+                        # 日別値
+                        for d in filtered_dates:
+                            d_short = d[5:]  # "03-01" → 列名用
+                            b = int(budget_pivot.get((cr, d), 0))
+                            r = int(regs_pivot.get((cr, d), 0))
+                            a = int(apo_by_detail_day.get((cr, d), 0)) if len(apo_by_detail_day) > 0 else 0
+
+                            if metric == "広告費":
+                                row_data[d_short] = f"¥{b:,}" if b else "-"
+                            elif metric == "獲得リスト数":
+                                row_data[d_short] = str(r) if r else "-"
+                            elif metric == "CPA":
+                                row_data[d_short] = f"¥{b // r:,}" if r > 0 else "-"
+                            elif metric == "アポ獲得数":
+                                row_data[d_short] = str(a) if a else "-"
+                            elif metric == "売上":
+                                row_data[d_short] = "-"  # 売上は日別紐づけ不可
+                            elif metric == "ROAS":
+                                row_data[d_short] = "-"  # 日別ROAS算出不可
+
+                        pivot_rows.append(row_data)
+
+                df_pivot = pd.DataFrame(pivot_rows)
+                st.dataframe(
+                    df_pivot,
+                    use_container_width=True,
+                    hide_index=True,
+                    height=min(len(df_pivot) * 35 + 38, 800),
+                )
+            else:
+                st.info("データなし")
 
             st.divider()
 
