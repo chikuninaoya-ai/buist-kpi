@@ -921,13 +921,17 @@ def main():
                 if len(matched) > 0:
                     sales_by_detail = matched.groupby("CR詳細")["受注金額"].sum()
 
-            # 全CR詳細を収集
-            all_cr_details = sorted(
+            # 全CR詳細を収集（消化予算降順）
+            all_cr_set = (
                 set(budget_by_detail.index)
                 | set(regs_by_detail.index)
                 | (set(apo_by_detail_total.index) if len(apo_by_detail_total) > 0 else set())
-                | (set(sales_by_detail.index) if len(sales_by_detail) > 0 else set()),
-                key=cr_sort_key,
+                | (set(sales_by_detail.index) if len(sales_by_detail) > 0 else set())
+            )
+            all_cr_details = sorted(
+                all_cr_set,
+                key=lambda x: budget_by_detail.get(x, 0),
+                reverse=True,
             )
 
             if all_cr_details:
