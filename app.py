@@ -185,12 +185,20 @@ def load_data():
     # 同一LINE登録名は初回登録のみカウント（Meta準拠: ユニークユーザー数）
     df_list = df_list.sort_values("配信基準日時").drop_duplicates(subset=["LINE登録名"], keep="first")
 
-    # 過去（3月以前）の既存登録者を除外
+    # 過去（3月以前）の既存登録者を除外（アカウント共通LINE友だちIDで照合）
     try:
         ws_friends = sh1.worksheet("追加済み友達リスト")
         friends_rows = ws_friends.get_all_values()
-        past_names = set(r[0].strip() for r in friends_rows[1:] if r[0].strip())
-        df_list = df_list[~df_list["LINE登録名"].isin(past_names)]
+        past_account_ids = set(r[0].strip() for r in friends_rows[1:] if r[0].strip())
+
+        ws_mapping = sh1.worksheet("読者IDマッピング")
+        mapping_rows = ws_mapping.get_all_values()
+        reader_to_account = {r[0].strip(): r[1].strip() for r in mapping_rows[1:] if len(r) > 1}
+
+        # リスト流入経路のB列（全シナリオ共通読者ID）→ アカウント共通ID → 過去に存在するか判定
+        df_list["アカウント共通ID"] = df_list["全シナリオ共通読者ID"].map(reader_to_account)
+        df_list = df_list[~df_list["アカウント共通ID"].isin(past_account_ids)]
+        df_list = df_list.drop(columns=["アカウント共通ID"])
     except Exception:
         pass
 
