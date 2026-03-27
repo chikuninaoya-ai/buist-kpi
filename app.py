@@ -273,17 +273,29 @@ def load_data():
         if row[0].strip().startswith("2026/03") or row[0].strip().startswith("2026/3"):
             status = row[7].strip() if len(row) > 7 else ""
             route = row[5].strip() if len(row) > 5 else ""
+            line_name = row[1].strip() if len(row) > 1 else ""
             if status:
-                date_str = row[0].strip()[:10]  # 2026/03/xx
-                # 日付を統一フォーマットに変換（2026/3/5 → 2026-03-05）
+                date_str = row[0].strip()[:10]
                 try:
                     date_normalized = str(pd.Timestamp(date_str).date())
                 except Exception:
                     date_normalized = ""
+                # LINE名照合でCR詳細を紐づけ（売上と同じロジック）
+                cr_detail = None
+                if line_name:
+                    norm_name = normalize_name(line_name)
+                    cr_detail = line_to_cr_detail.get(norm_name)
+                    if not cr_detail and norm_name and len(norm_name) >= 2:
+                        for ln, cd in line_to_cr_detail.items():
+                            if not ln or len(ln) < 2 or min(len(norm_name), len(ln)) < 3:
+                                continue
+                            if norm_name in ln or ln in norm_name:
+                                cr_detail = cd
+                                break
                 consult_ad.append({
                     "ステータス": status, "経路": route,
                     "日付": date_normalized,
-                    "CR詳細": extract_cr_detail(route) if route else None,
+                    "CR詳細": cr_detail,
                 })
     df_consult_ad = pd.DataFrame(consult_ad) if consult_ad else pd.DataFrame(columns=["ステータス", "経路", "日付", "CR詳細"])
 
