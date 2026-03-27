@@ -182,11 +182,20 @@ def load_data():
     df_list["LINE名_正規化"] = df_list["LINE登録名"].apply(normalize_name)
     df_list["登録日"] = df_list["配信基準日時"].str[:10]
 
-    # CR内でユニークなLINE登録名のみカウント（同一人物の重複除外）
-    registrations_by_cr = df_list.groupby("CR番号")["LINE登録名"].nunique().reset_index()
-    registrations_by_cr.columns = ["CR番号", "LINE登録数"]
-    # 全体ユニーク数（同一人物が複数CRに登録していても1人としてカウント）
-    total_unique_registrations = int(df_list["LINE登録名"].nunique())
+    # 同一LINE登録名は初回登録のみカウント（Meta準拠: ユニークユーザー数）
+    df_list = df_list.sort_values("配信基準日時").drop_duplicates(subset=["LINE登録名"], keep="first")
+
+    # 過去（3月以前）の既存登録者を除外
+    try:
+        ws_friends = sh1.worksheet("追加済み友達リスト")
+        friends_rows = ws_friends.get_all_values()
+        past_names = set(r[0].strip() for r in friends_rows[1:] if r[0].strip())
+        df_list = df_list[~df_list["LINE登録名"].isin(past_names)]
+    except Exception:
+        pass
+
+    registrations_by_cr = df_list.groupby("CR番号").size().reset_index(name="LINE登録数")
+    total_unique_registrations = len(df_list)
 
     # ── 3. 仮成約者リスト ──
     ws_sales = sh2.worksheet("仮成約者リスト")
@@ -368,9 +377,8 @@ def load_data():
     except Exception:
         pass
 
-    # 日別登録数（広告ダッシュボード用）- CR詳細内で重複除外
-    df_list_dedup = df_list.drop_duplicates(subset=["LINE登録名", "CR詳細"], keep="first")
-    regs_by_day_cr = df_list_dedup.groupby(["登録日", "CR番号", "CR詳細"]).size().reset_index(name="登録数")
+    # 日別登録数（広告ダッシュボード用）- df_listは既に初回登録のみ
+    regs_by_day_cr = df_list.groupby(["登録日", "CR番号", "CR詳細"]).size().reset_index(name="登録数")
 
     return (budget_by_cr, registrations_by_cr, df_all_sales, df_cooloff,
             total_budget, df_consult_ad, df_consult_sns, kpi_meta, kpi_sns,
