@@ -129,8 +129,10 @@ def format_yen(val):
 
 
 def cr_sort_key(x):
-    m = re.search(r"\d+", x)
-    return int(m.group()) if m else 0
+    m = re.match(r"CR(\d+)(?:-(\d+))?(.*)", x)
+    if not m:
+        return (0, 0, x)
+    return (int(m.group(1)), int(m.group(2)) if m.group(2) else 0, m.group(3))
 
 
 def classify_channel(raw):
@@ -167,8 +169,8 @@ def load_data():
     df_budget = df_budget.dropna(subset=["CR番号"])
     df_budget["金額"] = df_budget["Amount Spent"].str.replace(",", "").astype(float)
 
-    budget_by_cr = df_budget.groupby("CR番号")["金額"].sum().reset_index()
-    budget_by_cr.columns = ["CR番号", "消化予算"]
+    budget_by_cr = df_budget.groupby("CR詳細")["金額"].sum().reset_index()
+    budget_by_cr.columns = ["CR詳細", "消化予算"]
     total_budget = int(budget_by_cr["消化予算"].sum())
 
     # ── 2. リスト流入経路 ──
@@ -222,7 +224,7 @@ def load_data():
         # マッピング取得失敗時はLINE名ベースのフォールバック
         df_list = df_list.sort_values("配信基準日時").drop_duplicates(subset=["LINE登録名"], keep="first")
 
-    registrations_by_cr = df_list.groupby("CR番号").size().reset_index(name="LINE登録数")
+    registrations_by_cr = df_list.groupby("CR詳細").size().reset_index(name="LINE登録数")
     total_unique_registrations = len(df_list)
 
     # ── 3. 仮成約者リスト ──
@@ -461,21 +463,21 @@ def calc_consultation_stats(df_consult):
 
 def build_cr_table(budget_by_cr, registrations_by_cr, matched_sales):
     if len(matched_sales) == 0:
-        sales_by_cr = pd.DataFrame(columns=["CR番号", "成約件数", "売上合計"])
+        sales_by_cr = pd.DataFrame(columns=["CR詳細", "成約件数", "売上合計"])
     else:
-        sales_by_cr = matched_sales.groupby("CR番号").agg(
+        sales_by_cr = matched_sales.groupby("CR詳細").agg(
             成約件数=("受注金額", "count"),
             売上合計=("受注金額", "sum"),
         ).reset_index()
 
-    all_crs = set(budget_by_cr["CR番号"]) | set(registrations_by_cr["CR番号"])
+    all_crs = set(budget_by_cr["CR詳細"]) | set(registrations_by_cr["CR詳細"])
     if len(sales_by_cr) > 0:
-        all_crs |= set(sales_by_cr["CR番号"])
+        all_crs |= set(sales_by_cr["CR詳細"])
 
-    df = pd.DataFrame({"CR番号": sorted(all_crs, key=cr_sort_key)})
-    df = df.merge(budget_by_cr, on="CR番号", how="left")
-    df = df.merge(registrations_by_cr, on="CR番号", how="left")
-    df = df.merge(sales_by_cr, on="CR番号", how="left")
+    df = pd.DataFrame({"CR詳細": sorted(all_crs, key=cr_sort_key)})
+    df = df.merge(budget_by_cr, on="CR詳細", how="left")
+    df = df.merge(registrations_by_cr, on="CR詳細", how="left")
+    df = df.merge(sales_by_cr, on="CR詳細", how="left")
     df = df.fillna(0)
 
     for col in ["消化予算", "LINE登録数", "成約件数", "売上合計"]:
@@ -616,10 +618,10 @@ def render_cr_chart(df_cr):
     if len(chart_df) == 0:
         return
 
-    cr_order = chart_df["CR番号"].tolist()
+    cr_order = chart_df["CR詳細"].tolist()
 
-    melted = chart_df[["CR番号", "消化予算", "売上合計"]].melt(
-        id_vars="CR番号", var_name="項目", value_name="金額"
+    melted = chart_df[["CR詳細", "消化予算", "売上合計"]].melt(
+        id_vars="CR詳細", var_name="項目", value_name="金額"
     )
     melted["項目"] = melted["項目"].map({"消化予算": "広告費", "売上合計": "売上"})
 
@@ -627,7 +629,7 @@ def render_cr_chart(df_cr):
         alt.Chart(melted)
         .mark_bar(cornerRadiusTopLeft=3, cornerRadiusTopRight=3)
         .encode(
-            x=alt.X("CR番号:N", sort=cr_order, title=None,
+            x=alt.X("CR詳細:N", sort=cr_order, title=None,
                      axis=alt.Axis(labelAngle=0, labelFontSize=12)),
             y=alt.Y("金額:Q", title=None,
                      axis=alt.Axis(format="~s", labelFontSize=11)),
@@ -641,7 +643,7 @@ def render_cr_chart(df_cr):
                 legend=alt.Legend(title=None, orient="bottom", labelFontSize=13),
             ),
             tooltip=[
-                alt.Tooltip("CR番号:N"),
+                alt.Tooltip("CR詳細:N"),
                 alt.Tooltip("項目:N"),
                 alt.Tooltip("金額:Q", format=",.0f"),
             ],
@@ -667,7 +669,7 @@ def render_cr_table(df_master):
         use_container_width=True,
         hide_index=True,
         column_config={
-            "CR番号": st.column_config.TextColumn("CR番号", width="small"),
+            "CR詳細": st.column_config.TextColumn("CR詳細", width="small"),
             "消化予算": st.column_config.TextColumn("消化予算", width="medium"),
             "LINE登録数": st.column_config.TextColumn("LINE登録数", width="small"),
             "成約件数": st.column_config.TextColumn("成約件数", width="small"),
@@ -685,7 +687,7 @@ def render_sales_list(sales_df, show_cr=False):
         return
     cols = []
     if show_cr:
-        cols.append("CR番号")
+        cols.append("CR詳細")
     cols += ["LINE名", "本名", "商品名", "受注単価"]
     if "セールス担当" in sales_df.columns:
         cols.append("セールス担当")
@@ -796,8 +798,8 @@ def main():
 
     # ====== Meta ======
     with tab_meta:
-        matched_meta = df_meta[df_meta["CR番号"].notna()]
-        unmatched_meta = df_meta[df_meta["CR番号"].isna()]
+        matched_meta = df_meta[df_meta["CR詳細"].notna()]
+        unmatched_meta = df_meta[df_meta["CR詳細"].isna()]
 
         render_summary(df_meta, budget=total_budget,
                        total_registrations=total_registrations,
