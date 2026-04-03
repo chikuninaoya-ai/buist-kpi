@@ -153,14 +153,19 @@ def classify_channel(raw):
 
 @st.cache_data(ttl=300)
 def load_data(target_year_month="2026-03"):
-    # 月フォーマット導出
-    ym_year = int(target_year_month[:4])
-    ym_month = int(target_year_month[5:7])
-    ym_jp = f"{ym_year}年{ym_month}月"           # "2026年3月"
-    ym_slash = f"{ym_year}/{ym_month:02d}"        # "2026/03"
-    ym_slash_short = f"{ym_year}/{ym_month}"      # "2026/3"
-    ym_month_jp = f"{ym_month}月"                 # "3月"
-    ym_year_short = str(ym_year)[2:]              # "26"
+    all_mode = target_year_month is None
+
+    # 月フォーマット導出（全期間モード時はダミー値）
+    if not all_mode:
+        ym_year = int(target_year_month[:4])
+        ym_month = int(target_year_month[5:7])
+        ym_jp = f"{ym_year}年{ym_month}月"
+        ym_slash = f"{ym_year}/{ym_month:02d}"
+        ym_slash_short = f"{ym_year}/{ym_month}"
+        ym_month_jp = f"{ym_month}月"
+        ym_year_short = str(ym_year)[2:]
+    else:
+        ym_jp = ym_slash = ym_slash_short = ym_month_jp = ym_year_short = None
 
     scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
     creds = Credentials.from_service_account_info(
@@ -175,7 +180,8 @@ def load_data(target_year_month="2026-03"):
     ws_budget = sh1.worksheet("CR別予算")
     budget_rows = ws_budget.get_all_values()
     df_budget = pd.DataFrame(budget_rows[1:], columns=budget_rows[0])
-    df_budget = df_budget[df_budget["Day"].str.startswith(target_year_month)]
+    if not all_mode:
+        df_budget = df_budget[df_budget["Day"].str.startswith(target_year_month)]
     df_budget["CR番号"] = df_budget["Campaign Name"].apply(extract_cr)
     df_budget["CR詳細"] = df_budget["Campaign Name"].apply(extract_cr_detail)
     df_budget = df_budget.dropna(subset=["CR番号"])
@@ -189,7 +195,8 @@ def load_data(target_year_month="2026-03"):
     ws_list = sh1.worksheet("リスト流入経路")
     list_rows = ws_list.get_all_values()
     df_list = pd.DataFrame(list_rows[1:], columns=list_rows[0])
-    df_list = df_list[df_list["配信基準日時"].str.startswith(target_year_month)]
+    if not all_mode:
+        df_list = df_list[df_list["配信基準日時"].str.startswith(target_year_month)]
     df_list["CR番号"] = df_list["登録経路"].apply(extract_cr)
     df_list["CR詳細"] = df_list["登録経路"].apply(extract_cr_detail)
     df_list = df_list.dropna(subset=["CR番号"])
@@ -244,21 +251,27 @@ def load_data(target_year_month="2026-03"):
     sales_rows = ws_sales.get_all_values()
     sales_header = sales_rows[0]
 
-    month_start = None
-    next_section = None
-    for i, row in enumerate(sales_rows):
-        if row[0] and ym_jp in row[0]:
-            month_start = i + 1
-        elif month_start and row[0] and re.match(r"20\d{2}年\d{1,2}月", row[0]):
-            next_section = i
-            break
+    if all_mode:
+        # 全期間: 月ヘッダー行を除外して全データ行を取得
+        all_data = [r for r in sales_rows[1:]
+                    if not re.match(r"20\d{2}年\d{1,2}月", r[0]) and r[0].strip() != ""]
+        df_sales = pd.DataFrame(all_data, columns=sales_header) if all_data else pd.DataFrame(columns=sales_header)
+    else:
+        month_start = None
+        next_section = None
+        for i, row in enumerate(sales_rows):
+            if row[0] and ym_jp in row[0]:
+                month_start = i + 1
+            elif month_start and row[0] and re.match(r"20\d{2}年\d{1,2}月", row[0]):
+                next_section = i
+                break
+        end = next_section if next_section else len(sales_rows)
+        month_data = sales_rows[month_start:end] if month_start else []
+        df_sales = pd.DataFrame(month_data, columns=sales_header)
 
-    end = next_section if next_section else len(sales_rows)
-    month_data = sales_rows[month_start:end] if month_start else []
-
-    df_sales = pd.DataFrame(month_data, columns=sales_header)
-    df_sales = df_sales[df_sales["LINE名"].str.strip() != ""]
-    df_sales = df_sales[df_sales["LINE名"].notna()]
+    if "LINE名" in df_sales.columns:
+        df_sales = df_sales[df_sales["LINE名"].str.strip() != ""]
+        df_sales = df_sales[df_sales["LINE名"].notna()]
 
     # クーリングオフ除外
     if COOLOFF_COL in df_sales.columns:
@@ -321,7 +334,8 @@ def load_data(target_year_month="2026-03"):
     ad_rows = ws_consult_ad.get_all_values()
     consult_ad = []
     for row in ad_rows[2:]:
-        if row[0].strip().startswith(ym_slash) or row[0].strip().startswith(ym_slash_short):
+        date_cell = row[0].strip()
+        if all_mode or date_cell.startswith(ym_slash) or date_cell.startswith(ym_slash_short):
             status = row[7].strip() if len(row) > 7 else ""
             route = row[5].strip() if len(row) > 5 else ""
             line_name = row[1].strip() if len(row) > 1 else ""
@@ -355,7 +369,8 @@ def load_data(target_year_month="2026-03"):
     sns_rows = ws_consult_sns.get_all_values()
     consult_sns = []
     for row in sns_rows[2:]:
-        if row[0].strip().startswith(ym_slash) or row[0].strip().startswith(ym_slash_short):
+        date_cell = row[0].strip()
+        if all_mode or date_cell.startswith(ym_slash) or date_cell.startswith(ym_slash_short):
             status = row[7].strip() if len(row) > 7 else ""
             if status:
                 consult_sns.append({"ステータス": status})
@@ -373,51 +388,53 @@ def load_data(target_year_month="2026-03"):
 
     # 広告KPI Meta
     kpi_meta = {}
-    try:
-        ws_kpi_ad = sh2.worksheet("【広告】KPI｜Meta")
-        kpi_rows = ws_kpi_ad.get_all_values()
-        kpi_start = None
-        for i, row in enumerate(kpi_rows):
-            if row[0] and ym_jp in row[0]:
-                kpi_start = i
-                break
-        if kpi_start:
-            r = lambda off: kpi_rows[kpi_start + off] if kpi_start + off < len(kpi_rows) else []
-            kpi_meta = {
-                "消化予算": _parse_num(r(2)[2]),
-                "アポ獲得数": _parse_num(r(2)[8]),
-                "成約数": _parse_num(r(2)[14]),
-                "成約率": _parse_num(r(6)[14]),
-                "許容CPA": _parse_num(r(7)[2]),
-                "リスト獲得数": _parse_num(r(11)[2]),
-                "アポ実施数": _parse_num(r(11)[8]),
-                "アポ着席率": _parse_num(r(15)[11]),
-            }
-    except Exception:
-        pass
+    if not all_mode:
+        try:
+            ws_kpi_ad = sh2.worksheet("【広告】KPI｜Meta")
+            kpi_rows = ws_kpi_ad.get_all_values()
+            kpi_start = None
+            for i, row in enumerate(kpi_rows):
+                if row[0] and ym_jp in row[0]:
+                    kpi_start = i
+                    break
+            if kpi_start:
+                r = lambda off: kpi_rows[kpi_start + off] if kpi_start + off < len(kpi_rows) else []
+                kpi_meta = {
+                    "消化予算": _parse_num(r(2)[2]),
+                    "アポ獲得数": _parse_num(r(2)[8]),
+                    "成約数": _parse_num(r(2)[14]),
+                    "成約率": _parse_num(r(6)[14]),
+                    "許容CPA": _parse_num(r(7)[2]),
+                    "リスト獲得数": _parse_num(r(11)[2]),
+                    "アポ実施数": _parse_num(r(11)[8]),
+                    "アポ着席率": _parse_num(r(15)[11]),
+                }
+        except Exception:
+            pass
 
     # SNS KPI
     kpi_sns = {}
-    try:
-        ws_kpi_sns = sh2.worksheet("【SNS】KPI")
-        kpi_rows_s = ws_kpi_sns.get_all_values()
-        kpi_start_s = None
-        for i, row in enumerate(kpi_rows_s):
-            if row[0] and ym_month_jp in row[0] and ym_year_short in row[0]:
-                kpi_start_s = i
-                break
-        if kpi_start_s:
-            r = lambda off: kpi_rows_s[kpi_start_s + off] if kpi_start_s + off < len(kpi_rows_s) else []
-            kpi_sns = {
-                "受注高": _parse_num(r(4)[2]),
-                "リスト獲得数": _parse_num(r(4)[11]),
-                "必要アポ数": _parse_num(r(7)[8]),
-                "アポ着席率": _parse_num(r(11)[5]),
-                "成約数": _parse_num(r(16)[2]),
-                "成約率": _parse_num(r(19)[2]),
-            }
-    except Exception:
-        pass
+    if not all_mode:
+        try:
+            ws_kpi_sns = sh2.worksheet("【SNS】KPI")
+            kpi_rows_s = ws_kpi_sns.get_all_values()
+            kpi_start_s = None
+            for i, row in enumerate(kpi_rows_s):
+                if row[0] and ym_month_jp in row[0] and ym_year_short in row[0]:
+                    kpi_start_s = i
+                    break
+            if kpi_start_s:
+                r = lambda off: kpi_rows_s[kpi_start_s + off] if kpi_start_s + off < len(kpi_rows_s) else []
+                kpi_sns = {
+                    "受注高": _parse_num(r(4)[2]),
+                    "リスト獲得数": _parse_num(r(4)[11]),
+                    "必要アポ数": _parse_num(r(7)[8]),
+                    "アポ着席率": _parse_num(r(11)[5]),
+                    "成約数": _parse_num(r(16)[2]),
+                    "成約率": _parse_num(r(19)[2]),
+                }
+        except Exception:
+            pass
 
     # 日別登録数（広告ダッシュボード用）- df_listは既に初回登録のみ
     regs_by_day_cr = df_list.groupby(["登録日", "CR番号", "CR詳細"]).size().reset_index(name="登録数")
@@ -865,19 +882,37 @@ def main():
     with tab_ad:
         def _ad_dashboard():
             from datetime import timedelta
-            dates = sorted(df_budget_raw["Day"].unique())
-            if not dates:
-                st.info("広告データなし")
-                return
 
             # ── ヘッダー: 期間プリセット選択 ──
             today = pd.Timestamp.now().normalize()
-            presets = ["今月", "今日", "昨日", "過去7日間", "過去30日間", "過去90日間", "カスタム期間"]
+            presets = ["今月", "全期間", "今日", "昨日", "過去7日間", "過去30日間", "過去90日間", "カスタム期間"]
             col_preset, col_custom1, col_custom2, col_spacer = st.columns([1.2, 0.8, 0.8, 1.2])
             with col_preset:
                 selected_preset = st.selectbox("期間", presets, index=0, key="ad_period_preset", label_visibility="collapsed")
 
-            if selected_preset == "今月":
+            # 全期間モード: 月選択に依存しない全データをロード
+            if selected_preset == "全期間":
+                (_a, _b, ad_sales_all, _c, _d, ad_consult_all, _e, _f, _g,
+                 ad_budget_all, ad_regs_all, _h) = load_data(None)
+                use_budget = ad_budget_all
+                use_regs = ad_regs_all
+                use_consult = ad_consult_all
+                use_sales = ad_sales_all
+            else:
+                use_budget = df_budget_raw
+                use_regs = regs_by_day_cr
+                use_consult = df_consult_ad
+                use_sales = df_all_sales
+
+            dates = sorted(use_budget["Day"].unique())
+            if not dates:
+                st.info("広告データなし")
+                return
+
+            if selected_preset == "全期間":
+                d_start = pd.to_datetime(dates[0])
+                d_end = pd.to_datetime(dates[-1])
+            elif selected_preset == "今月":
                 d_start = today.replace(day=1)
                 d_end = today
             elif selected_preset == "今日":
@@ -908,13 +943,13 @@ def main():
 
             d_start_str = str(pd.Timestamp(d_start).date())
             d_end_str = str(pd.Timestamp(d_end).date())
-            df_filtered = df_budget_raw[
-                (df_budget_raw["Day"] >= d_start_str) &
-                (df_budget_raw["Day"] <= d_end_str)
+            df_filtered = use_budget[
+                (use_budget["Day"] >= d_start_str) &
+                (use_budget["Day"] <= d_end_str)
             ]
-            regs_filtered = regs_by_day_cr[
-                (regs_by_day_cr["登録日"] >= d_start_str) &
-                (regs_by_day_cr["登録日"] <= d_end_str)
+            regs_filtered = use_regs[
+                (use_regs["登録日"] >= d_start_str) &
+                (use_regs["登録日"] <= d_end_str)
             ]
             period_label = f"{d_start_str} - {d_end_str}"
 
@@ -1032,11 +1067,11 @@ def main():
                 pv_start_str = str(pd.Timestamp(pv_start).date())
                 pv_end_str = str(pd.Timestamp(pv_end).date())
 
-            pv_budget = df_budget_raw[
-                (df_budget_raw["Day"] >= pv_start_str) & (df_budget_raw["Day"] <= pv_end_str)
+            pv_budget = use_budget[
+                (use_budget["Day"] >= pv_start_str) & (use_budget["Day"] <= pv_end_str)
             ]
-            pv_regs = regs_by_day_cr[
-                (regs_by_day_cr["登録日"] >= pv_start_str) & (regs_by_day_cr["登録日"] <= pv_end_str)
+            pv_regs = use_regs[
+                (use_regs["登録日"] >= pv_start_str) & (use_regs["登録日"] <= pv_end_str)
             ]
 
             # 期間内の日付リスト
@@ -1053,12 +1088,12 @@ def main():
             # アポ獲得数: CR詳細 × 日付（審査落ち・日程調整中を除外）
             apo_by_detail_day = pd.Series(dtype=int)
             apo_by_detail_total = pd.Series(dtype=int)
-            if len(df_consult_ad) > 0 and "CR詳細" in df_consult_ad.columns and "日付" in df_consult_ad.columns:
-                df_ca = df_consult_ad[
-                    (df_consult_ad["CR詳細"].notna()) &
-                    (df_consult_ad["日付"] >= pv_start_str) &
-                    (df_consult_ad["日付"] <= pv_end_str) &
-                    (~df_consult_ad["ステータス"].str.contains("審査落ち|日程調整", na=False))
+            if len(use_consult) > 0 and "CR詳細" in use_consult.columns and "日付" in use_consult.columns:
+                df_ca = use_consult[
+                    (use_consult["CR詳細"].notna()) &
+                    (use_consult["日付"] >= pv_start_str) &
+                    (use_consult["日付"] <= pv_end_str) &
+                    (~use_consult["ステータス"].str.contains("審査落ち|日程調整", na=False))
                 ]
                 if len(df_ca) > 0:
                     apo_by_detail_day = df_ca.groupby(["CR詳細", "日付"]).size()
@@ -1066,8 +1101,8 @@ def main():
 
             # 売上: CR詳細（合計のみ、日付別は不可）
             sales_by_detail = pd.Series(dtype=int)
-            if len(df_all_sales) > 0 and "CR詳細" in df_all_sales.columns:
-                matched = df_all_sales[df_all_sales["CR詳細"].notna()]
+            if len(use_sales) > 0 and "CR詳細" in use_sales.columns:
+                matched = use_sales[use_sales["CR詳細"].notna()]
                 if len(matched) > 0:
                     sales_by_detail = matched.groupby("CR詳細")["受注金額"].sum()
 
