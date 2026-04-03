@@ -9,7 +9,10 @@ from google.oauth2.service_account import Credentials
 # ── 設定 ──
 SHEET1_ID = "1PRtTE9qhjNOfz1_3GoNu397-_zN33FRmgkd5C_5Mbrg"
 SHEET2_ID = "1-jGXpUpUrfIHLbBuzeydGdYYr9v_J6QKynJKtLC5L7w"
-TARGET_YEAR_MONTH = "2026-03"
+AVAILABLE_MONTHS = [
+    ("2026年3月", "2026-03"),
+    ("2026年4月", "2026-04"),
+]
 COOLOFF_COL = "クーリングオフ\n（発生時のみ記載）"
 PAYMENT_COL = "翌月末\n着金額"
 
@@ -149,7 +152,16 @@ def classify_channel(raw):
 # ── データ取得 ──
 
 @st.cache_data(ttl=300)
-def load_data():
+def load_data(target_year_month="2026-03"):
+    # 月フォーマット導出
+    ym_year = int(target_year_month[:4])
+    ym_month = int(target_year_month[5:7])
+    ym_jp = f"{ym_year}年{ym_month}月"           # "2026年3月"
+    ym_slash = f"{ym_year}/{ym_month:02d}"        # "2026/03"
+    ym_slash_short = f"{ym_year}/{ym_month}"      # "2026/3"
+    ym_month_jp = f"{ym_month}月"                 # "3月"
+    ym_year_short = str(ym_year)[2:]              # "26"
+
     scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
     creds = Credentials.from_service_account_info(
         st.secrets["gcp_service_account"], scopes=scopes
@@ -163,7 +175,7 @@ def load_data():
     ws_budget = sh1.worksheet("CR別予算")
     budget_rows = ws_budget.get_all_values()
     df_budget = pd.DataFrame(budget_rows[1:], columns=budget_rows[0])
-    df_budget = df_budget[df_budget["Day"].str.startswith(TARGET_YEAR_MONTH)]
+    df_budget = df_budget[df_budget["Day"].str.startswith(target_year_month)]
     df_budget["CR番号"] = df_budget["Campaign Name"].apply(extract_cr)
     df_budget["CR詳細"] = df_budget["Campaign Name"].apply(extract_cr_detail)
     df_budget = df_budget.dropna(subset=["CR番号"])
@@ -177,7 +189,7 @@ def load_data():
     ws_list = sh1.worksheet("リスト流入経路")
     list_rows = ws_list.get_all_values()
     df_list = pd.DataFrame(list_rows[1:], columns=list_rows[0])
-    df_list = df_list[df_list["配信基準日時"].str.startswith(TARGET_YEAR_MONTH)]
+    df_list = df_list[df_list["配信基準日時"].str.startswith(target_year_month)]
     df_list["CR番号"] = df_list["登録経路"].apply(extract_cr)
     df_list["CR詳細"] = df_list["登録経路"].apply(extract_cr_detail)
     df_list = df_list.dropna(subset=["CR番号"])
@@ -213,7 +225,7 @@ def load_data():
                 keep_idx.append(idx)
         df_list = df_list.loc[keep_idx]
 
-        # 過去（3月以前）の既存登録者を除外
+        # 過去の既存登録者を除外
         ws_friends = sh1.worksheet("追加済み友達リスト")
         friends_rows = ws_friends.get_all_values()
         past_account_ids = set(r[0].strip() for r in friends_rows[1:] if r[0].strip())
@@ -232,19 +244,19 @@ def load_data():
     sales_rows = ws_sales.get_all_values()
     sales_header = sales_rows[0]
 
-    march_start = None
+    month_start = None
     next_section = None
     for i, row in enumerate(sales_rows):
-        if row[0] and "2026年3月" in row[0]:
-            march_start = i + 1
-        elif march_start and row[0] and re.match(r"20\d{2}年\d{1,2}月", row[0]):
+        if row[0] and ym_jp in row[0]:
+            month_start = i + 1
+        elif month_start and row[0] and re.match(r"20\d{2}年\d{1,2}月", row[0]):
             next_section = i
             break
 
     end = next_section if next_section else len(sales_rows)
-    march_data = sales_rows[march_start:end] if march_start else []
+    month_data = sales_rows[month_start:end] if month_start else []
 
-    df_sales = pd.DataFrame(march_data, columns=sales_header)
+    df_sales = pd.DataFrame(month_data, columns=sales_header)
     df_sales = df_sales[df_sales["LINE名"].str.strip() != ""]
     df_sales = df_sales[df_sales["LINE名"].notna()]
 
@@ -309,7 +321,7 @@ def load_data():
     ad_rows = ws_consult_ad.get_all_values()
     consult_ad = []
     for row in ad_rows[2:]:
-        if row[0].strip().startswith("2026/03") or row[0].strip().startswith("2026/3"):
+        if row[0].strip().startswith(ym_slash) or row[0].strip().startswith(ym_slash_short):
             status = row[7].strip() if len(row) > 7 else ""
             route = row[5].strip() if len(row) > 5 else ""
             line_name = row[1].strip() if len(row) > 1 else ""
@@ -343,7 +355,7 @@ def load_data():
     sns_rows = ws_consult_sns.get_all_values()
     consult_sns = []
     for row in sns_rows[2:]:
-        if row[0].strip().startswith("2026/03") or row[0].strip().startswith("2026/3"):
+        if row[0].strip().startswith(ym_slash) or row[0].strip().startswith(ym_slash_short):
             status = row[7].strip() if len(row) > 7 else ""
             if status:
                 consult_sns.append({"ステータス": status})
@@ -366,7 +378,7 @@ def load_data():
         kpi_rows = ws_kpi_ad.get_all_values()
         kpi_start = None
         for i, row in enumerate(kpi_rows):
-            if row[0] and "2026年3月" in row[0]:
+            if row[0] and ym_jp in row[0]:
                 kpi_start = i
                 break
         if kpi_start:
@@ -391,7 +403,7 @@ def load_data():
         kpi_rows_s = ws_kpi_sns.get_all_values()
         kpi_start_s = None
         for i, row in enumerate(kpi_rows_s):
-            if row[0] and "3月" in row[0] and "26" in row[0]:
+            if row[0] and ym_month_jp in row[0] and ym_year_short in row[0]:
                 kpi_start_s = i
                 break
         if kpi_start_s:
@@ -699,12 +711,24 @@ def render_sales_list(sales_df, show_cr=False):
 
 def main():
     st.title("📊 ブイストKPI管理")
-    st.caption("2026年3月 | Google Sheets 自動連携")
+
+    # 月選択
+    month_labels = [label for label, _ in AVAILABLE_MONTHS]
+    month_values = [val for _, val in AVAILABLE_MONTHS]
+    selected_idx = st.selectbox(
+        "対象月", range(len(AVAILABLE_MONTHS)),
+        format_func=lambda i: month_labels[i],
+        index=len(AVAILABLE_MONTHS) - 1,  # 最新月をデフォルト
+        key="month_select",
+    )
+    selected_month = month_values[selected_idx]
+    selected_label = month_labels[selected_idx]
+    st.caption(f"{selected_label} | Google Sheets 自動連携")
 
     with st.spinner("Google Sheets からデータを読み込み中..."):
         (budget_by_cr, registrations_by_cr, df_all_sales, df_cooloff,
          total_budget, df_consult_ad, df_consult_sns, kpi_meta, kpi_sns,
-         df_budget_raw, regs_by_day_cr, total_unique_registrations) = load_data()
+         df_budget_raw, regs_by_day_cr, total_unique_registrations) = load_data(selected_month)
 
     if len(df_cooloff) > 0:
         st.info(f"クーリングオフ・キャンセル・退会: {len(df_cooloff)}件を売上から除外済み")
