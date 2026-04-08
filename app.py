@@ -252,10 +252,18 @@ def load_data(target_year_month="2026-03"):
     sales_header = sales_rows[0]
 
     if all_mode:
-        # 全期間: 月ヘッダー行を除外して全データ行を取得
-        all_data = [r for r in sales_rows[1:]
-                    if not re.match(r"20\d{2}年\d{1,2}月", r[0]) and r[0].strip() != ""]
-        df_sales = pd.DataFrame(all_data, columns=sales_header) if all_data else pd.DataFrame(columns=sales_header)
+        # 全期間: 月ヘッダーからどの月のデータかタグ付け
+        all_data = []
+        current_month = None
+        for r in sales_rows[1:]:
+            m = re.match(r"(20\d{2})年(\d{1,2})月", r[0])
+            if m:
+                current_month = f"{m.group(1)}-{int(m.group(2)):02d}"
+                continue
+            if current_month and r[0].strip():
+                all_data.append(r + [current_month])
+        ext_header = list(sales_header) + ["_売上月"]
+        df_sales = pd.DataFrame(all_data, columns=ext_header) if all_data else pd.DataFrame(columns=ext_header)
     else:
         month_start = None
         next_section = None
@@ -947,6 +955,18 @@ def main():
             ]
             period_label = f"{d_start_str} - {d_end_str}"
 
+            # 売上データを期間内の月に絞る
+            if "_売上月" in use_sales.columns:
+                covered_months = set()
+                d_cur = pd.Timestamp(d_start_str).replace(day=1)
+                d_end_ts = pd.Timestamp(d_end_str)
+                while d_cur <= d_end_ts:
+                    covered_months.add(d_cur.strftime("%Y-%m"))
+                    d_cur += pd.DateOffset(months=1)
+                sales_filtered = use_sales[use_sales["_売上月"].isin(covered_months)]
+            else:
+                sales_filtered = use_sales
+
             # ── サマリーカード ──
             total_spend = int(df_filtered["金額"].sum())
             num_campaigns = df_filtered["Campaign Name"].nunique()
@@ -1008,7 +1028,7 @@ def main():
             ch_camp_budget.columns = ["キャンペーン名", "消化予算"]
             ch_camp_budget = ch_camp_budget[ch_camp_budget["消化予算"] > 0]
 
-            matched_sales_ad = use_sales[use_sales["CR詳細"].notna()].copy() if len(use_sales) > 0 else pd.DataFrame()
+            matched_sales_ad = sales_filtered[sales_filtered["CR詳細"].notna()].copy() if len(sales_filtered) > 0 else pd.DataFrame()
             if len(matched_sales_ad) > 0:
                 detail_to_camp = df_filtered[["Campaign Name", "CR詳細"]].drop_duplicates()
                 matched_sales_ad = matched_sales_ad.merge(detail_to_camp, on="CR詳細", how="left")
@@ -1147,8 +1167,8 @@ def main():
 
             # 売上: CR詳細（合計のみ、日付別は不可）
             sales_by_detail = pd.Series(dtype=int)
-            if len(use_sales) > 0 and "CR詳細" in use_sales.columns:
-                matched = use_sales[use_sales["CR詳細"].notna()]
+            if len(sales_filtered) > 0 and "CR詳細" in sales_filtered.columns:
+                matched = sales_filtered[sales_filtered["CR詳細"].notna()]
                 if len(matched) > 0:
                     sales_by_detail = matched.groupby("CR詳細")["受注金額"].sum()
 
