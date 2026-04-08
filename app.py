@@ -890,19 +890,13 @@ def main():
             with col_preset:
                 selected_preset = st.selectbox("期間", presets, index=0, key="ad_period_preset", label_visibility="collapsed")
 
-            # 全期間モード: 月選択に依存しない全データをロード
-            if selected_preset == "全期間":
-                (_a, _b, ad_sales_all, _c, _d, ad_consult_all, _e, _f, _g,
-                 ad_budget_all, ad_regs_all, _h) = load_data(None)
-                use_budget = ad_budget_all
-                use_regs = ad_regs_all
-                use_consult = ad_consult_all
-                use_sales = ad_sales_all
-            else:
-                use_budget = df_budget_raw
-                use_regs = regs_by_day_cr
-                use_consult = df_consult_ad
-                use_sales = df_all_sales
+            # 広告ダッシュボードは常に全データを使用（上部の月選択に依存しない）
+            (_a, _b, ad_sales_all, _c, _d, ad_consult_all, _e, _f, _g,
+             ad_budget_all, ad_regs_all, _h) = load_data(None)
+            use_budget = ad_budget_all
+            use_regs = ad_regs_all
+            use_consult = ad_consult_all
+            use_sales = ad_sales_all
 
             dates = sorted(use_budget["Day"].unique())
             if not dates:
@@ -1008,6 +1002,58 @@ def main():
 
             # ── キャンペーン別パフォーマンス（集計） ──
             st.subheader("キャンペーン別パフォーマンス（集計）")
+
+            # 広告費 vs 売上 棒グラフ
+            ch_camp_budget = df_filtered.groupby("Campaign Name")["金額"].sum().reset_index()
+            ch_camp_budget.columns = ["キャンペーン名", "消化予算"]
+            ch_camp_budget = ch_camp_budget[ch_camp_budget["消化予算"] > 0]
+
+            matched_sales_ad = use_sales[use_sales["CR詳細"].notna()].copy() if len(use_sales) > 0 else pd.DataFrame()
+            if len(matched_sales_ad) > 0:
+                detail_to_camp = df_filtered[["Campaign Name", "CR詳細"]].drop_duplicates()
+                matched_sales_ad = matched_sales_ad.merge(detail_to_camp, on="CR詳細", how="left")
+                camp_sales = matched_sales_ad[matched_sales_ad["Campaign Name"].notna()].groupby(
+                    "Campaign Name")["受注金額"].sum().reset_index()
+                camp_sales.columns = ["キャンペーン名", "売上合計"]
+            else:
+                camp_sales = pd.DataFrame(columns=["キャンペーン名", "売上合計"])
+
+            chart_data = ch_camp_budget.merge(camp_sales, on="キャンペーン名", how="left").fillna(0)
+            chart_data["売上合計"] = chart_data["売上合計"].astype(int)
+
+            if len(chart_data) > 0:
+                chart_data["短縮名"] = chart_data["キャンペーン名"].apply(short_camp_name)
+                camp_order = chart_data.sort_values("消化予算", ascending=False)["短縮名"].tolist()
+                melted = chart_data[["短縮名", "消化予算", "売上合計"]].melt(
+                    id_vars="短縮名", value_vars=["消化予算", "売上合計"],
+                    var_name="項目", value_name="金額"
+                )
+                melted["項目"] = melted["項目"].map({"消化予算": "広告費", "売上合計": "売上"})
+                chart = (
+                    alt.Chart(melted)
+                    .mark_bar(cornerRadiusTopLeft=3, cornerRadiusTopRight=3)
+                    .encode(
+                        x=alt.X("短縮名:N", sort=camp_order, title=None,
+                                 axis=alt.Axis(labelAngle=-30, labelFontSize=11, labelLimit=200)),
+                        y=alt.Y("金額:Q", title=None,
+                                 axis=alt.Axis(format="~s", labelFontSize=11)),
+                        xOffset=alt.XOffset("項目:N"),
+                        color=alt.Color(
+                            "項目:N",
+                            scale=alt.Scale(domain=["売上", "広告費"], range=["#4CAF50", "#E53935"]),
+                            legend=alt.Legend(title=None, orient="bottom", labelFontSize=13),
+                        ),
+                        tooltip=[
+                            alt.Tooltip("短縮名:N", title="キャンペーン"),
+                            alt.Tooltip("項目:N"),
+                            alt.Tooltip("金額:Q", format=",.0f"),
+                        ],
+                    )
+                    .properties(height=400)
+                    .configure_view(strokeWidth=0)
+                )
+                st.altair_chart(chart, use_container_width=True)
+
             display_camp = df_camp_summary.sort_values("消化予算", ascending=False).copy()
             display_camp["消化予算"] = display_camp["消化予算"].apply(lambda x: f"¥{x:,.0f}")
             display_camp["CPA"] = display_camp["CPA"].apply(lambda x: f"¥{x:,.0f}" if x > 0 else "-")
@@ -1213,62 +1259,6 @@ def main():
             else:
                 st.info("データなし")
 
-            # ── 広告費 vs 売上（キャンペーン別）── ピボットテーブルと同じ日付範囲
-            st.divider()
-            st.subheader("広告費 vs 売上（キャンペーン別）")
-            st.caption(f"期間: {pv_start_str} 〜 {pv_end_str}")
-
-            # チャート期間の予算集計（1円でも消化したキャンペーンのみ）- ピボットと同じ日付範囲
-            ch_camp_budget = pv_budget.groupby("Campaign Name")["金額"].sum().reset_index()
-            ch_camp_budget.columns = ["キャンペーン名", "消化予算"]
-            ch_camp_budget = ch_camp_budget[ch_camp_budget["消化予算"] > 0]
-
-            # CR詳細→キャンペーン名マッピングで正確に売上を紐づけ
-            matched_meta_ad = df_meta[df_meta["CR詳細"].notna()].copy()
-            detail_to_camp = pv_budget[["Campaign Name", "CR詳細"]].drop_duplicates()
-            matched_meta_ad = matched_meta_ad.merge(detail_to_camp, on="CR詳細", how="left")
-            camp_sales = matched_meta_ad[matched_meta_ad["Campaign Name"].notna()].groupby(
-                "Campaign Name")["受注金額"].sum().reset_index()
-            camp_sales.columns = ["キャンペーン名", "売上合計"]
-
-            chart_data = ch_camp_budget.merge(
-                camp_sales, on="キャンペーン名", how="left"
-            ).fillna(0)
-            chart_data["売上合計"] = chart_data["売上合計"].astype(int)
-
-            if len(chart_data) > 0:
-                chart_data["短縮名"] = chart_data["キャンペーン名"].apply(short_camp_name)
-                camp_order = chart_data.sort_values("消化予算", ascending=False)["短縮名"].tolist()
-                melted = chart_data[["短縮名", "消化予算", "売上合計"]].melt(
-                    id_vars="短縮名", value_vars=["消化予算", "売上合計"],
-                    var_name="項目", value_name="金額"
-                )
-                melted["項目"] = melted["項目"].map({"消化予算": "広告費", "売上合計": "売上"})
-
-                chart = (
-                    alt.Chart(melted)
-                    .mark_bar(cornerRadiusTopLeft=3, cornerRadiusTopRight=3)
-                    .encode(
-                        x=alt.X("短縮名:N", sort=camp_order, title=None,
-                                 axis=alt.Axis(labelAngle=-30, labelFontSize=11, labelLimit=200)),
-                        y=alt.Y("金額:Q", title=None,
-                                 axis=alt.Axis(format="~s", labelFontSize=11)),
-                        xOffset=alt.XOffset("項目:N"),
-                        color=alt.Color(
-                            "項目:N",
-                            scale=alt.Scale(domain=["売上", "広告費"], range=["#4CAF50", "#E53935"]),
-                            legend=alt.Legend(title=None, orient="bottom", labelFontSize=13),
-                        ),
-                        tooltip=[
-                            alt.Tooltip("短縮名:N", title="キャンペーン"),
-                            alt.Tooltip("項目:N"),
-                            alt.Tooltip("金額:Q", format=",.0f"),
-                        ],
-                    )
-                    .properties(height=400)
-                    .configure_view(strokeWidth=0)
-                )
-                st.altair_chart(chart, use_container_width=True)
 
         _ad_dashboard()
 
