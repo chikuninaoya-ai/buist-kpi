@@ -12,6 +12,8 @@ SHEET2_ID = "1-jGXpUpUrfIHLbBuzeydGdYYr9v_J6QKynJKtLC5L7w"
 AVAILABLE_MONTHS = [
     ("2026年3月", "2026-03"),
     ("2026年4月", "2026-04"),
+    ("2026年5月", "2026-05"),
+    ("2026年6月", "2026-06"),
 ]
 COOLOFF_COL = "クーリングオフ\n（発生時のみ記載）"
 PAYMENT_COL = "翌月末\n着金額"
@@ -892,7 +894,9 @@ def main():
             from datetime import timedelta
 
             # ── ヘッダー: 期間プリセット選択 ──
-            today = pd.Timestamp.now().normalize()
+            # Streamlit CloudはUTCで動くため、JST(Asia/Tokyo)基準で「今日」を確定する
+            # （UTCのままだとJST午前中に当日分が抜け落ちる）
+            today = pd.Timestamp.now(tz="Asia/Tokyo").normalize().tz_localize(None)
             presets = ["今月", "全期間", "今日", "昨日", "過去7日間", "過去30日間", "過去90日間", "カスタム期間"]
             col_preset, col_custom1, col_custom2, col_spacer = st.columns([1.2, 0.8, 0.8, 1.2])
             with col_preset:
@@ -1013,34 +1017,37 @@ def main():
             else:
                 camp_regs = camp_regs_raw
 
-            df_camp_summary = camp_budget.merge(camp_regs, on="キャンペーン名", how="outer").fillna(0)
-            df_camp_summary["消化予算"] = df_camp_summary["消化予算"].astype(int)
-            df_camp_summary["LINE登録数"] = df_camp_summary["LINE登録数"].astype(int)
-            df_camp_summary["CPA"] = df_camp_summary.apply(
-                lambda r: int(r["消化予算"] / r["LINE登録数"]) if r["LINE登録数"] > 0 else 0, axis=1
-            )
-
-            # ── キャンペーン別パフォーマンス（集計） ──
-            st.subheader("キャンペーン別パフォーマンス（集計）")
-
-            # 広告費 vs 売上 棒グラフ
-            ch_camp_budget = df_filtered.groupby("Campaign Name")["金額"].sum().reset_index()
-            ch_camp_budget.columns = ["キャンペーン名", "消化予算"]
-            ch_camp_budget = ch_camp_budget[ch_camp_budget["消化予算"] > 0]
-
-            matched_sales_ad = sales_filtered[sales_filtered["CR詳細"].notna()].copy() if len(sales_filtered) > 0 else pd.DataFrame()
-            if len(matched_sales_ad) > 0:
-                detail_to_camp = df_filtered[["Campaign Name", "CR詳細"]].drop_duplicates()
-                matched_sales_ad = matched_sales_ad.merge(detail_to_camp, on="CR詳細", how="left")
-                camp_sales = matched_sales_ad[matched_sales_ad["Campaign Name"].notna()].groupby(
+            # 売上をキャンペーン単位に集計（CR詳細→キャンペーン名で紐づけ）
+            if len(sales_filtered) > 0 and "CR詳細" in sales_filtered.columns:
+                matched_sales_camp = sales_filtered[sales_filtered["CR詳細"].notna()].copy()
+            else:
+                matched_sales_camp = pd.DataFrame()
+            if len(matched_sales_camp) > 0:
+                matched_sales_camp = matched_sales_camp.merge(cr_to_camp, on="CR詳細", how="left")
+                camp_sales = matched_sales_camp[matched_sales_camp["Campaign Name"].notna()].groupby(
                     "Campaign Name")["受注金額"].sum().reset_index()
                 camp_sales.columns = ["キャンペーン名", "売上合計"]
             else:
                 camp_sales = pd.DataFrame(columns=["キャンペーン名", "売上合計"])
 
-            chart_data = ch_camp_budget.merge(camp_sales, on="キャンペーン名", how="left").fillna(0)
-            chart_data["売上合計"] = chart_data["売上合計"].astype(int)
+            df_camp_summary = camp_budget.merge(camp_regs, on="キャンペーン名", how="outer")
+            df_camp_summary = df_camp_summary.merge(camp_sales, on="キャンペーン名", how="left").fillna(0)
+            df_camp_summary["消化予算"] = df_camp_summary["消化予算"].astype(int)
+            df_camp_summary["LINE登録数"] = df_camp_summary["LINE登録数"].astype(int)
+            df_camp_summary["売上合計"] = df_camp_summary["売上合計"].astype(int)
+            df_camp_summary["CPA"] = df_camp_summary.apply(
+                lambda r: int(r["消化予算"] / r["LINE登録数"]) if r["LINE登録数"] > 0 else 0, axis=1
+            )
+            # ROAS = キャンペーンごとの売上 ÷ 消化予算（×100, %）
+            df_camp_summary["ROAS"] = df_camp_summary.apply(
+                lambda r: round(r["売上合計"] / r["消化予算"] * 100, 1) if r["消化予算"] > 0 else 0, axis=1
+            )
 
+            # ── キャンペーン別パフォーマンス（集計） ──
+            st.subheader("キャンペーン別パフォーマンス（集計）")
+
+            # 広告費 vs 売上（左軸¥）＋ ROAS（右軸%）チャート
+            chart_data = df_camp_summary[df_camp_summary["消化予算"] > 0].copy()
             if len(chart_data) > 0:
                 chart_data["短縮名"] = chart_data["キャンペーン名"].apply(short_camp_name)
                 camp_order = chart_data.sort_values("消化予算", ascending=False)["短縮名"].tolist()
@@ -1049,7 +1056,7 @@ def main():
                     var_name="項目", value_name="金額"
                 )
                 melted["項目"] = melted["項目"].map({"消化予算": "広告費", "売上合計": "売上"})
-                chart = (
+                bars = (
                     alt.Chart(melted)
                     .mark_bar(cornerRadiusTopLeft=3, cornerRadiusTopRight=3)
                     .encode(
@@ -1069,14 +1076,46 @@ def main():
                             alt.Tooltip("金額:Q", format=",.0f"),
                         ],
                     )
+                )
+                # ROAS折れ線（右軸・独立スケール）
+                roas_line = (
+                    alt.Chart(chart_data)
+                    .mark_line(point=alt.OverlayMarkDef(color="#1E88E5", size=55),
+                               color="#1E88E5", strokeWidth=2)
+                    .encode(
+                        x=alt.X("短縮名:N", sort=camp_order, title=None),
+                        y=alt.Y("ROAS:Q", title="ROAS (%)",
+                                 axis=alt.Axis(format=".0f", labelFontSize=11, titleColor="#1E88E5")),
+                        tooltip=[
+                            alt.Tooltip("短縮名:N", title="キャンペーン"),
+                            alt.Tooltip("ROAS:Q", title="ROAS(%)", format=".1f"),
+                        ],
+                    )
+                )
+                roas_text = (
+                    alt.Chart(chart_data)
+                    .mark_text(dy=-10, color="#1565C0", fontSize=10, fontWeight="bold")
+                    .encode(
+                        x=alt.X("短縮名:N", sort=camp_order),
+                        y=alt.Y("ROAS:Q"),
+                        text=alt.Text("ROAS:Q", format=".0f"),
+                    )
+                )
+                chart = (
+                    alt.layer(bars, roas_line, roas_text)
+                    .resolve_scale(y="independent")
                     .properties(height=400)
                     .configure_view(strokeWidth=0)
                 )
                 st.altair_chart(chart, use_container_width=True)
+                st.caption("🔵 折れ線＝ROAS（右軸・売上÷消化予算）／棒＝広告費・売上（左軸）")
 
             display_camp = df_camp_summary.sort_values("消化予算", ascending=False).copy()
+            display_camp = display_camp[["キャンペーン名", "消化予算", "LINE登録数", "CPA", "売上合計", "ROAS"]]
             display_camp["消化予算"] = display_camp["消化予算"].apply(lambda x: f"¥{x:,.0f}")
+            display_camp["売上合計"] = display_camp["売上合計"].apply(lambda x: f"¥{x:,.0f}" if x > 0 else "-")
             display_camp["CPA"] = display_camp["CPA"].apply(lambda x: f"¥{x:,.0f}" if x > 0 else "-")
+            display_camp["ROAS"] = display_camp["ROAS"].apply(lambda x: f"{x}%" if x > 0 else "-")
             st.dataframe(
                 display_camp,
                 use_container_width=True,
@@ -1086,6 +1125,8 @@ def main():
                     "消化予算": st.column_config.TextColumn("消化予算", width="medium"),
                     "LINE登録数": st.column_config.NumberColumn("LINE登録数", width="small"),
                     "CPA": st.column_config.TextColumn("CPA", width="medium"),
+                    "売上合計": st.column_config.TextColumn("売上合計", width="medium"),
+                    "ROAS": st.column_config.TextColumn("ROAS", width="small"),
                 },
             )
 
