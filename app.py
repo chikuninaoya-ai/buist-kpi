@@ -1112,21 +1112,29 @@ def main():
 
             display_camp = df_camp_summary.sort_values("消化予算", ascending=False).copy()
             display_camp = display_camp[["キャンペーン名", "消化予算", "LINE登録数", "CPA", "売上合計", "ROAS"]]
-            display_camp["消化予算"] = display_camp["消化予算"].apply(lambda x: f"¥{x:,.0f}")
-            display_camp["売上合計"] = display_camp["売上合計"].apply(lambda x: f"¥{x:,.0f}" if x > 0 else "-")
-            display_camp["CPA"] = display_camp["CPA"].apply(lambda x: f"¥{x:,.0f}" if x > 0 else "-")
-            display_camp["ROAS"] = display_camp["ROAS"].apply(lambda x: f"{x}%" if x > 0 else "-")
+
+            # 数値はそのまま保持し、表示だけStylerで整形する。
+            # （文字列に変換すると辞書順ソートになり、消化予算/CPA/ROAS等を数値順に並べ替えられないため）
+            def _fmt_yen(x):
+                return f"¥{x:,.0f}" if x and x > 0 else "-"
+
+            def _fmt_pct(x):
+                return f"{x:g}%" if x and x > 0 else "-"
+
+            styled_camp = display_camp.style.format({
+                "消化予算": _fmt_yen,
+                "CPA": _fmt_yen,
+                "売上合計": _fmt_yen,
+                "ROAS": _fmt_pct,
+            })
+            st.caption("各列のヘッダーをクリックすると高い順／低い順に並べ替えできます")
             st.dataframe(
-                display_camp,
+                styled_camp,
                 use_container_width=True,
                 hide_index=True,
                 column_config={
                     "キャンペーン名": st.column_config.TextColumn("キャンペーン名", width="large"),
-                    "消化予算": st.column_config.TextColumn("消化予算", width="medium"),
                     "LINE登録数": st.column_config.NumberColumn("LINE登録数", width="small"),
-                    "CPA": st.column_config.TextColumn("CPA", width="medium"),
-                    "売上合計": st.column_config.TextColumn("売上合計", width="medium"),
-                    "ROAS": st.column_config.TextColumn("ROAS", width="small"),
                 },
             )
 
